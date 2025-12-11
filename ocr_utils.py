@@ -1,36 +1,91 @@
 import io
+import json
 import re
-from typing import List, Dict, Tuple
+from typing import List, Dict
 from PIL import Image
-import pytesseract
-from pdf2image import convert_from_bytes
 import numpy as np
 
+# PyMuPDF as fitz for rendering PDFs to images
+import fitz  # PyMuPDF
 
-def pdf_to_images(pdf_bytes: bytes, dpi: int = 300) -> List[Image.Image]:
-    """Convert PDF bytes to list of PIL Images (one per page)."""
-    images = convert_from_bytes(pdf_bytes, dpi=dpi)
-    return images
+# Google Vision
+from google.cloud import vision
+from google.oauth2 import service_account
+
+# ---- OCR helpers ----
+
+def vision_client_from_service_account_info(sa_info: dict):
+    """
+    Create a google.cloud.vision.ImageAnnotatorClient from service account info dict.
+    """
+    credentials = service_account.Credentials.from_service_account_info(sa_info)
+    client = vision.ImageAnnotatorClient(credentials=credentials)
+    return client
 
 
-def ocr_image(img: Image.Image, lang: str = "eng") -> str:
-    """Run Tesseract OCR on a PIL Image and return extracted text."""
-    text = pytesseract.image_to_string(img, lang=lang)
-    return text
+def pdf_to_images_via_fitz(pdf_bytes: bytes, zoom: float = 2.0) -> List[bytes]:
+    """
+    Convert PDF bytes to list of PNG bytes using PyMuPDF (fitz).
+    zoom controls resolution (2.0 => ~150-200 dpi depending on source)
+    """
+    imgs = []
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    mat = fitz.Matrix(zoom, zoom)
+    for page in doc:
+        pix = page.get_pixmap(matrix=mat, alpha=False)
+        img_bytes = pix.tobytes("png")
+        imgs.append(img_bytes)
+    doc.close()
+    return imgs
 
 
-def ocr_bytes(file_bytes: bytes, filename: str) -> str:
-    """Take uploaded bytes and run OCR (handles pdf and images)."""
+def load_image_bytes(image_bytes: bytes) -> bytes:
+    """
+    Ensure image is a PNG/JPEG bytes suitable for Vision.
+    If the uploaded bytes are already an image, we normalize them via PIL to PNG.
+    """
+    img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+    out = io.BytesIO()
+    img.save(out, format="PNG")
+    return out.getvalue()
+
+
+def ocr_image_with_vision_bytes(img_bytes: bytes, client: vision.ImageAnnotatorClient) -> str:
+    """
+    Use Google Vision Document/Text detection on image bytes.
+    Returns extracted full text.
+    """
+    image = vision.Image(content=img_bytes)
+    # Use document_text_detection for better layout and full text
+    response = client.document_text_detection(image=image)
+    if response.error.message:
+        # fallback to text_detection if any error
+        response = client.text_detection(image=image)
+    # Try full_text_annotation when available
+    text = ""
+    if hasattr(response, "full_text_annotation") and response.full_text_annotation:
+        text = response.full_text_annotation.text or ""
+    else:
+        # fallback
+        anns = response.text_annotations
+        if anns and len(anns) > 0:
+            text = anns[0].description
+    return text or ""
+
+
+def ocr_bytes(file_bytes: bytes, filename: str, vision_client: vision.ImageAnnotatorClient) -> str:
+    """
+    Take uploaded bytes and run OCR using Google Vision. Handles PDF and images.
+    """
     lower = filename.lower()
     text_pages = []
     if lower.endswith(".pdf"):
-        images = pdf_to_images(file_bytes)
-        for img in images:
-            text_pages.append(ocr_image(img))
+        images = pdf_to_images_via_fitz(file_bytes)
+        for img_bytes in images:
+            text_pages.append(ocr_image_with_vision_bytes(img_bytes, vision_client))
     else:
-        # treat as image
-        img = Image.open(io.BytesIO(file_bytes)).convert("RGB")
-        text_pages.append(ocr_image(img))
+        img_bytes = load_image_bytes(file_bytes)
+        text_pages.append(ocr_image_with_vision_bytes(img_bytes, vision_client))
     return "\n\n".join(text_pages)
 
 
@@ -84,16 +139,19 @@ def extract_summary_fields(text: str) -> Dict[str, str]:
         # fallback: collect all currency-like numbers then pick the largest
         all_amounts = _AMOUNT_RE.findall(text)
         if all_amounts:
-            # normalize comma thousands
-            nums = [float(a.replace(",", "").replace(" ", "")) for a in all_amounts]
+            nums = []
+            for a in all_amounts:
+                try:
+                    nums.append(float(a.replace(",", "").replace(" ", "")))
+                except Exception:
+                    pass
             if nums:
                 total = f"{max(nums):.2f}"
-        if not total and all_amounts:
+        if not total and 'all_amounts' in locals() and all_amounts:
             total = all_amounts[-1]
     else:
         total = total_candidates[-1]
 
-    # normalize total (remove spaces)
     total = total.replace(" ", "") if total else total
 
     return {
@@ -118,7 +176,6 @@ def extract_line_items(text: str) -> List[Dict[str, str]]:
             continue
         prices = _LINE_ITEM_PRICE_RE.findall(l)
         if prices:
-            # choose rightmost price as amount
             amount = prices[-1]
             left = l.rsplit(amount, 1)[0].strip(" -\t")
             # attempt to find qty (single integer) in left
@@ -126,7 +183,6 @@ def extract_line_items(text: str) -> List[Dict[str, str]]:
             mqty = re.search(r"\b(\d+)\b", left)
             if mqty:
                 qty = mqty.group(1)
-                # remove qty from description
                 desc = left.replace(qty, "").strip()
             else:
                 desc = left
