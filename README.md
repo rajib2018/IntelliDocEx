@@ -1,45 +1,54 @@
-# Basic Invoice OCR → Excel Streamlit App
+# Streamlit Invoice OCR → Excel (Streamlit Community Cloud ready)
 
-A minimal intelligent document processing app that extracts invoice information from PDF or image uploads and produces a downloadable Excel file.
+A minimal Intelligent Document Processing (IDP) app that extracts key invoice fields from PDF or image uploads and exports the results to a downloadable Excel file. This repo is prepared to run on Streamlit Community Cloud (free tier) by using Google Cloud Vision for OCR and PyMuPDF to render PDFs to images (no system `apt` packages required).
 
-Features
+Highlights
 - Upload invoice PDF or image (jpg/png/pdf).
-- OCR via Tesseract (pdfs converted to images using pdf2image).
+- OCR via Google Cloud Vision API (fast and accurate).
+- PDFs rendered with PyMuPDF (pure-Python, no Poppler).
 - Extracts key fields: vendor (heuristic), invoice number, date, total amount.
-- Attempts to parse simple line items (very basic heuristic).
+- Attempts to parse simple line items (naive heuristic).
 - Download results as an Excel file (Summary + LineItems).
+- Streamlit Community Cloud compatible (no apt-get required).
 
-Requirements
-- Python 3.8+
-- System packages:
-  - Tesseract OCR (install tesseract on your OS). On macOS: `brew install tesseract`. On Ubuntu/Debian: `sudo apt install tesseract-ocr`.
-  - Poppler for pdf2image. On macOS: `brew install poppler`. On Ubuntu: `sudo apt install poppler-utils`.
+Important: You MUST provide Google Cloud Vision credentials in Streamlit secrets to enable OCR.
 
-Install Python dependencies
-```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-```
+Quick setup (local)
+1. Create virtual env and install:
+   python -m venv .venv
+   source .venv/bin/activate
+   pip install -r requirements.txt
 
-Run locally
-```bash
-streamlit run app.py
-```
+2. Run locally:
+   streamlit run app.py
 
-Deploying
-- Streamlit Cloud: push this repo to GitHub and create a new app from the repo. Make sure runtime has Tesseract and Poppler or provide a Dockerfile (included).
-- Docker: build the included Dockerfile if you want an image that includes system deps.
+Deploy to Streamlit Community Cloud (free)
+1. Push this repo to GitHub.
+2. On Streamlit Cloud, create a new app from your repo.
+3. Add your Google Cloud service account JSON to the app's **Secrets**:
+   - Open "Settings" → "Secrets" for your Streamlit app.
+   - Add a secret with key: `GCP_CREDENTIALS_JSON`
+   - For the value paste the entire service account JSON (the JSON object as plain text).
+   - Example:
+     {
+       "type": "service_account",
+       "project_id": "...",
+       ...
+     }
+4. Start the app. The app will use the Vision API via the credentials stored in secrets.
 
-Notes and limitations
-- This is intentionally simple. It uses OCR text and regex heuristics; it will not match advanced or heavily-formatted invoices.
-- For production-grade IDP, consider adding layout-aware OCR, trained parsers, table extractors (Camelot/Tabula, deep learning table detection), or commercial APIs.
+Notes on costs and quotas
+- Google Cloud Vision API may incur charges after free-tier usage. Monitor your billing and quotas in Google Cloud Console.
+- For small testing or occasional use, the cost is usually very small.
 
-Files
-- app.py — Streamlit app (UI + orchestration)
-- ocr_utils.py — OCR and extraction helpers
-- requirements.txt — Python packages
-- Dockerfile — optional Docker image with Tesseract + Poppler
+If you prefer not to use Google Cloud Vision, I can:
+- add support for another cloud OCR (Azure, AWS, or OCR.space),
+- or provide a Docker-based deployment guide that runs Tesseract/Poppler (for Render/Cloud Run).
+
+Files included
+- app.py — Streamlit app with jazzed UI
+- ocr_utils.py — OCR helpers (Vision + PDF rendering) and extraction heuristics
+- requirements.txt — Python deps ready for Streamlit Cloud
 - .gitignore, LICENSE
 
-Have a PDF or image? Upload it in the UI and click "Process" — you'll get a preview and a button to download the results as an Excel workbook.
+Read the in-app instructions for adding GCP credentials and testing with a sample invoice.
